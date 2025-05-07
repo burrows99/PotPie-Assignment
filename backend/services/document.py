@@ -23,7 +23,7 @@ async def ingest_document(file: UploadFile, metadata: dict, db: AsyncSession):
     await db.refresh(doc)
     return doc
 
-async def process_document(doc_id: uuid.UUID, db: AsyncSession, persist_directory: str = "chroma_db"):
+async def process_document(doc_id: uuid.UUID, db: AsyncSession, chroma: Chroma):
     document = await db.get(Document, doc_id)
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
@@ -31,13 +31,8 @@ async def process_document(doc_id: uuid.UUID, db: AsyncSession, persist_director
     splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
     chunks = splitter.split_text(document.text)
 
-    vectordb = Chroma(
-        persist_directory=persist_directory,
-        embedding_function=embeddings,
-        collection_name=str(doc_id),
-    )
     ids = [f"{doc_id}-{i}" for i in range(len(chunks))]
-    vectordb.add_texts(texts=chunks, ids=ids)
-    vectordb.persist()
+    chroma.add_texts(texts=chunks, ids=ids)
+    chroma.persist()
 
     return {"indexed_chunks": len(chunks)}

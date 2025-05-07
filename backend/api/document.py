@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
+from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from db.database import SessionLocal
 from db.schemas.document import DocumentOut, DocumentProcessIn
@@ -20,6 +20,11 @@ async def upload_document(
         raise HTTPException(status_code=400, detail="Invalid metadata JSON")
     return await ingest_document(file, metadata_dict, db)
 
-@router.post("/process")
-async def process(doc_in: DocumentProcessIn, db: AsyncSession = Depends(get_db)):
-    return await process_document(doc_in.id, db)
+@router.post("/process", response_model=None)
+async def process_document_endpoint(
+    request: Request,
+    doc_in: DocumentProcessIn,
+    db: AsyncSession = Depends(get_db)
+):
+    chroma = request.app.state.chroma
+    return await process_document(doc_in.id, db, chroma)

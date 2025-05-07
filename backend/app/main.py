@@ -1,6 +1,8 @@
 from contextlib import asynccontextmanager
 from typing import List, Dict, Any
 from fastapi import FastAPI, HTTPException, Depends, status
+from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_community.vectorstores import Chroma
 from sqlalchemy import text, inspect
 from db import models
 from db.database import Base, engine, SessionLocal
@@ -12,21 +14,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # *Before* the app starts handling requests:
-    # e.g. create all tables
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-
+    embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+    chroma = Chroma(
+        persist_directory="chroma_db",
+        embedding_function=embeddings,
+        collection_name="default_collection"
+    )
+    app.state.chroma = chroma
     yield
-    # *After* the app has shut down (cleanup)
     await engine.dispose()
-
-async def get_db() -> AsyncSession:
-    async with SessionLocal() as db:
-        try:
-            yield db
-        finally:
-            await db.close()
 
 app = FastAPI(
     title="Document Processing API",

@@ -4,12 +4,9 @@ from db.database import SessionLocal
 from db.schemas.document import DocumentOut, DocumentProcessIn
 from services.document import ingest_document, process_document
 import json
+from db.database import get_db
 
 router = APIRouter(prefix="/api/docs", tags=["docs"])
-
-async def get_db():
-    async with SessionLocal() as session:
-        yield session
 
 @router.post("/upload", response_model=DocumentOut)
 async def upload_document(

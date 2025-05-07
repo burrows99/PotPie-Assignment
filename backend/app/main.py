@@ -1,67 +1,7 @@
-# # backend/app/main.py
-#
-# from fastapi import FastAPI, HTTPException, Depends, status
-# from sqlalchemy import text
-# from sqlalchemy.orm import Session
-#
-# from db import models
-# from db.database import engine, SessionLocal
-# from db.models.user import User  # example import of your model
-# from db.database import Base
-#
-# app = FastAPI(title="PotPie Assignment API")
-#
-# # Create all tables on startup
-# models.Base.metadata.create_all(bind=engine)
-# Base.metadata.create_all(bind=engine)
-#
-# def get_db() -> Session:
-#     db = SessionLocal()
-#     try:
-#         yield db
-#     finally:
-#         db.close()
-#
-# @app.get("/")
-# async def root():
-#     return {"message": "Hello World"}
-#
-# @app.get("/hello/{name}")
-# async def say_hello(name: str):
-#     return {"message": f"Hello {name}"}
-#
-# @app.get("/test-db")
-# def test_db_connection(db: Session = Depends(get_db)):
-#     """
-#     Executes a raw SELECT 1 to verify DB connectivity.
-#     Returns 200 with {"db_status": "ok", "result": 1}.
-#     """
-#     try:
-#         result = db.execute(text("SELECT 1")).scalar_one()
-#         return {"db_status": "ok", "result": result}
-#     except Exception as e:
-#         raise HTTPException(
-#             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-#             detail=f"Database connection failed: {e}"
-#         )
-#
-# @app.post("/users/", status_code=201)
-# def create_user(username: str, email: str, db: Session = Depends(get_db)):
-#     """
-#     Simple endpoint to create a new user.
-#     """
-#     existing = db.query(User).filter((User.username == username) | (User.email == email)).first()
-#     if existing:
-#         raise HTTPException(400, "Username or email already registered")
-#     user = User(username=username, email=email)
-#     db.add(user)
-#     db.commit()
-#     db.refresh(user)
-#     return {"id": user.id, "username": user.username, "email": user.email}
-
+from contextlib import asynccontextmanager
+from typing import List, Dict, Any
 from fastapi import FastAPI, HTTPException, Depends, status
-from sqlalchemy import text
-from sqlalchemy.orm import Session
+from sqlalchemy import text, inspect
 from db import models
 from db.database import Base, engine, SessionLocal
 from db.models.user import User  # example import of your model
@@ -69,7 +9,16 @@ from db.models.document import Document  # example import of your model
 from api.document import router as docs_router
 from sqlalchemy.ext.asyncio import AsyncSession
 
-app = FastAPI(title="Document Processing API")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # *Before* the app starts handling requests:
+    # e.g. create all tables
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    yield
+    # *After* the app has shut down (cleanup)
+    await engine.dispose()
 
 async def get_db() -> AsyncSession:
     async with SessionLocal() as db:
@@ -78,19 +27,14 @@ async def get_db() -> AsyncSession:
         finally:
             await db.close()
 
-@app.on_event("startup")
-async def startup():
-    # create tables
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+app = FastAPI(
+    title="Document Processing API",
+    lifespan=lifespan,  # attach the lifespan manager
+)
 
 @app.get("/")
 async def root():
     return {"message": "Hello World"}
-
-@app.get("/hello/{name}")
-async def say_hello(name: str):
-    return {"message": f"Hello {name}"}
 
 @app.get("/test-db")
 async def test_db_connection(db: AsyncSession = Depends(get_db)):
@@ -105,6 +49,160 @@ async def test_db_connection(db: AsyncSession = Depends(get_db)):
         raise HTTPException(
             status_code=500,
             detail=f"Database connection failed: {e}"
+        )
+
+
+@app.get("/metadata", response_model=Dict[str, Any])
+async def get_database_metadata(db: AsyncSession = Depends(get_db)):
+    """
+    Returns comprehensive metadata about the database including:
+    - Available schemas
+    - Tables in each schema
+    - Columns for each table
+    - Primary keys
+    - Foreign keys
+    """
+    try:
+        # Get database inspector
+        inspector = inspect(db.get_bind())
+
+        # Get all schemas
+        schemas = await db.execute(text("SELECT schema_name FROM information_schema.schemata"))
+        schema_names = [row[0] for row in schemas.fetchall()]
+
+        metadata = {}
+
+        for schema in schema_names:
+            # Skip system schemas
+            if schema in ['information_schema', 'pg_catalog']:
+                continue
+
+            metadata[schema] = {}
+
+            # Get tables in schema
+            tables = await db.execute(
+                text("SELECT table_name FROM information_schema.tables WHERE table_schema = :schema"),
+                {"schema": schema}
+            )
+            table_names = [row[0] for row in tables.fetchall()]
+
+            for table in table_names:
+                metadata[schema][table] = {
+                    "columns": [],
+                    "primary_keys": [],
+                    "foreign_keys": []
+                }
+
+                # Get columns
+                columns = await db.execute(
+                    text("""
+                         SELECT column_name, data_type, is_nullable, column_default
+                         FROM information_schema.columns
+                         WHERE table_schema = :schema
+                           AND table_name = :table
+                         ORDER BY ordinal_position
+                         """),
+                    {"schema": schema, "table": table}
+                )
+
+                for col in columns.fetchall():
+                    metadata[schema][table]["columns"].append({
+                        "name": col[0],
+                        "type": col[1],
+                        "nullable": col[2] == 'YES',
+                        "default": col[3]
+                    })
+
+                # Get primary keys
+                pks = await db.execute(
+                    text("""
+                         SELECT column_name
+                         FROM information_schema.key_column_usage
+                         WHERE table_schema = :schema
+                           AND table_name = :table
+                           AND constraint_name IN (SELECT constraint_name
+                                                   FROM information_schema.table_constraints
+                                                   WHERE constraint_type = 'PRIMARY KEY'
+                                                     AND table_schema = :schema
+                                                     AND table_name = :table)
+                         """),
+                    {"schema": schema, "table": table}
+                )
+
+                metadata[schema][table]["primary_keys"] = [row[0] for row in pks.fetchall()]
+
+                # Get foreign keys
+                fks = await db.execute(
+                    text("""
+                         SELECT kcu.column_name,
+                                ccu.table_name  AS foreign_table,
+                                ccu.column_name AS foreign_column
+                         FROM information_schema.key_column_usage kcu
+                                  JOIN information_schema.constraint_column_usage ccu
+                                       ON ccu.constraint_name = kcu.constraint_name
+                         WHERE kcu.table_schema = :schema
+                           AND kcu.table_name = :table
+                           AND kcu.constraint_name IN (SELECT constraint_name
+                                                       FROM information_schema.table_constraints
+                                                       WHERE constraint_type = 'FOREIGN KEY'
+                                                         AND table_schema = :schema
+                                                         AND table_name = :table)
+                         """),
+                    {"schema": schema, "table": table}
+                )
+
+                metadata[schema][table]["foreign_keys"] = [
+                    {
+                        "column": row[0],
+                        "references": f"{row[1]}({row[2]})"
+                    }
+                    for row in fks.fetchall()
+                ]
+
+        return metadata
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to fetch database metadata: {str(e)}"
+        )
+
+@app.get("/tables", response_model=List[str])
+async def get_all_tables(db: AsyncSession = Depends(get_db)):
+    """
+    Returns list of all tables in the database (excluding system tables)
+    """
+    try:
+        result = await db.execute(text("""
+            SELECT table_name 
+            FROM information_schema.tables 
+            WHERE table_schema NOT IN ('information_schema', 'pg_catalog')
+            AND table_schema NOT LIKE 'pg_%'
+        """))
+        return [row[0] for row in result.fetchall()]
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to fetch tables: {str(e)}"
+        )
+
+@app.get("/schemas", response_model=List[str])
+async def get_all_schemas(db: AsyncSession = Depends(get_db)):
+    """
+    Returns list of all schemas in the database (excluding system schemas)
+    """
+    try:
+        result = await db.execute(text("""
+            SELECT schema_name 
+            FROM information_schema.schemata
+            WHERE schema_name NOT IN ('information_schema', 'pg_catalog')
+            AND schema_name NOT LIKE 'pg_%'
+        """))
+        return [row[0] for row in result.fetchall()]
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to fetch schemas: {str(e)}"
         )
 
 app.include_router(docs_router)

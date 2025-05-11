@@ -18,17 +18,34 @@ A Node.js backend for document processing, semantic search, and conversational c
    git clone https://github.com/burrows99/PotPie-Assignment.git
    cd PotPie-Assignment
    ```
-2. **Install dependencies**
+2. **Run the setup script**
    ```sh
-   npm install
+   npm run init-project
    ```
+   - This will:
+     - Install all npm dependencies
+     - Check for PostgreSQL and install/start it if needed (macOS/Homebrew)
+     - Auto-detect working PostgreSQL credentials and write them to `.env`
+     - Prepare your environment for local development
+   - You can also run `./setup.sh` directly if you prefer.
 3. **Environment variables**
-   - Copy `.env.example` to `.env` and fill in required values (DB, JWT, etc).
+   - Copy `.env.example` to `.env` and fill in required values if not done by setup script.
 4. **Start the server**
    ```sh
    npm start
    ```
    - The server will auto-start ChromaDB and Ollama containers if not running.
+
+---
+
+## Test Script
+
+- The project includes a placeholder test script:
+  ```sh
+  npm test
+  ```
+  - You can add your own tests to the `test` script in `package.json`.
+  - By default, it will print an error (no tests specified).
 
 ---
 
